@@ -1,6 +1,6 @@
 ---
 name: github-activity-summarizer
-description: Summarize the commit activity on all Github activity over a given period of time.
+description: Summarize commit activity across GitHub repositories over a given period.
 author: tanish.shah
 version: 1.0.0
 allowed-tools:
@@ -9,7 +9,7 @@ allowed-tools:
 
 ## Description
 
-This skill is used to summarize the commit activity on all Github activity over a given period of time.
+This skill summarizes commit activity across repositories over a configurable number of days.
 
 ## Parameters
 
@@ -19,30 +19,13 @@ This skill is used to summarize the commit activity on all Github activity over 
 
 ## Execution Logic
 
-You should execute the following bash script using the `gh` (GitHub CLI) tool to aggregate data across repositories.
+Run the script in `scripts/github_activity_summary.sh` with the `days` argument.
 
 ```bash
-#!/bin/bash
-
-# Define the timeframe
-DAYS_LIMIT=$1
-SINCE_DATE=$(date -d "$DAYS_LIMIT days ago" +"%Y-%m-%dT%H:%M:%SZ")
-
-# Get the list of the most recently active repositories (limit 15 for performance)
-REPOS=$(gh repo list --limit 15 --json fullName --jq '.[].fullName')
-
-echo "Activity summary since: $SINCE_DATE"
-echo "--------------------------------"
-
-for REPO in $REPOS; do
-  # Fetch commits from the authenticated user only
-  COMMITS=$(gh api "repos/$REPO/commits?since=$SINCE_DATE" \
-    --jq '.[] | "- " + .commit.message + " (" + .sha[:7] + ")"')
-
-  if [ ! -z "$COMMITS" ]; then
-    echo "## Repository: $REPO"
-    echo "$COMMITS"
-    echo ""
-  fi
-done
+bash scripts/github_activity_summary.sh 4
 ```
+
+## Notes
+
+- Uses `nameWithOwner` (compatible with current `gh repo list` schema).
+- Uses a line-by-line loop to avoid shell word-splitting issues in zsh/bash.
