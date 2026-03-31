@@ -433,9 +433,9 @@ agent_config_update() {
 
   echo "[agent-config] Running update..."
   if [ "\$auto_yes" = "--yes" ]; then
-    bash <(curl -fsSL "\${base_url}setup-agent-config.sh") --source remote --base-url "\$base_url" --yes
+    curl -fsSL "\${base_url}setup-agent-config.sh" | bash -s -- --source remote --base-url "\$base_url" --yes
   else
-    bash <(curl -fsSL "\${base_url}setup-agent-config.sh") --source remote --base-url "\$base_url"
+    curl -fsSL "\${base_url}setup-agent-config.sh" | bash -s -- --source remote --base-url "\$base_url"
   fi
 }
 $PROFILE_MARKER_END

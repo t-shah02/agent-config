@@ -210,7 +210,7 @@
             <span>Run in terminal</span>
             <button id="copyBtn" class="copy-btn" type="button">Copy</button>
           </div>
-          <pre><code id="installCmd">bash &lt;(curl -fsSL https://agent-config.neetbyte.fun/setup-agent-config.sh) --source remote</code></pre>
+          <pre><code id="installCmd">curl -fsSL https://agent-config.neetbyte.fun/setup-agent-config.sh | bash -s -- --source remote</code></pre>
         </div>
         <p id="copyStatus" class="status"></p>
 
