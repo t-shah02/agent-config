@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-config-packages"
+version = "0.1.0"
+description = "Collection of Python packages for the agent config project"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.58.0",
+]
+
+[tool.uv]
+package = false
