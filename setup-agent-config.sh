@@ -9,7 +9,11 @@ CURSOR_AGENTS_DIR="$HOME/.cursor/agents"
 DEFAULT_BASE_URL="https://agent-config.neetbyte.fun/"
 SOURCE_MODE="local"
 BASE_URL="$DEFAULT_BASE_URL"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${BASH_SOURCE[0]-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    SCRIPT_DIR="$(pwd)"
+fi
 PROFILE_MARKER_START="# >>> agent-config helper >>>"
 PROFILE_MARKER_END="# <<< agent-config helper <<<"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12.12}"
