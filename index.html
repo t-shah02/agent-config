@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Config Installer</title>
+    <style>
+      :root {
+        --bg: #f6f7fb;
+        --panel: #ffffff;
+        --text: #111827;
+        --muted: #6b7280;
+        --primary: #2563eb;
+        --primary-strong: #1d4ed8;
+        --border: #e5e7eb;
+        --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+      }
+
+      :root[data-theme="dark"] {
+        --bg: #0b1020;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --primary: #60a5fa;
+        --primary-strong: #3b82f6;
+        --border: #1f2937;
+        --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu,
+          Cantarell, Noto Sans, Helvetica Neue, Arial, Apple Color Emoji, Segoe UI Emoji,
+          Segoe UI Symbol;
+        background: var(--bg);
+        color: var(--text);
+        transition: background-color 260ms ease, color 260ms ease;
+      }
+
+      .page {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .card {
+        width: min(860px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 28px;
+        transition: background-color 260ms ease, border-color 260ms ease, transform 220ms ease,
+          box-shadow 260ms ease;
+        animation: floatIn 420ms ease both;
+      }
+
+      .card:hover {
+        transform: translateY(-2px);
+      }
+
+      @keyframes floatIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px) scale(0.99);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.6rem, 1.8vw + 1rem, 2.2rem);
+      }
+
+      .sub {
+        color: var(--muted);
+        margin: 8px 0 22px;
+        line-height: 1.5;
+      }
+
+      .theme-btn {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 9px 12px;
+        cursor: pointer;
+        transition: all 200ms ease;
+      }
+
+      .theme-btn:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
+
+      .cmd-wrap {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        transition: border-color 200ms ease;
+      }
+
+      .cmd-wrap:focus-within {
+        border-color: var(--primary);
+      }
+
+      .cmd-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      pre {
+        margin: 0;
+        padding: 14px;
+        overflow-x: auto;
+        background: color-mix(in srgb, var(--panel) 86%, var(--bg));
+        transition: background-color 260ms ease;
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+        font-size: 0.92rem;
+      }
+
+      .copy-btn {
+        border: 0;
+        background: var(--primary);
+        color: #fff;
+        border-radius: 9px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: transform 140ms ease, background-color 180ms ease, opacity 180ms ease;
+      }
+
+      .copy-btn:hover {
+        background: var(--primary-strong);
+      }
+
+      .copy-btn:active {
+        transform: scale(0.97);
+      }
+
+      .status {
+        margin-top: 10px;
+        font-size: 0.9rem;
+        color: var(--muted);
+        min-height: 1.25rem;
+        transition: color 180ms ease, opacity 180ms ease;
+      }
+
+      .ok {
+        color: #16a34a;
+      }
+
+      .err {
+        color: #dc2626;
+      }
+
+      .steps {
+        margin: 20px 0 0;
+        padding-left: 20px;
+        color: var(--text);
+      }
+
+      .steps li {
+        margin: 8px 0;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <div class="header">
+          <h1>Agent Config Setup</h1>
+          <button id="themeToggle" class="theme-btn" type="button">Toggle theme</button>
+        </div>
+
+        <p class="sub">
+          Download and run the installer script from this server. The script syncs your config,
+          installs packages with <code>uv</code>, and links skills into Cursor.
+        </p>
+
+        <div class="cmd-wrap">
+          <div class="cmd-top">
+            <span>Run in terminal</span>
+            <button id="copyBtn" class="copy-btn" type="button">Copy</button>
+          </div>
+          <pre><code id="installCmd">bash &lt;(curl -fsSL https://agent-config.neetbyte.fun/setup-agent-config.sh) --source remote</code></pre>
+        </div>
+        <p id="copyStatus" class="status"></p>
+
+        <ol class="steps">
+          <li>Copy the command above.</li>
+          <li>Paste and run it in your shell.</li>
+          <li>Re-open terminal, then run <code>agent_config_update</code> later for upgrades.</li>
+        </ol>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        const root = document.documentElement;
+        const storageKey = "agent-config-theme";
+        const copyBtn = document.getElementById("copyBtn");
+        const cmdEl = document.getElementById("installCmd");
+        const copyStatus = document.getElementById("copyStatus");
+        const themeToggle = document.getElementById("themeToggle");
+
+        function setTheme(theme) {
+          root.setAttribute("data-theme", theme);
+          localStorage.setItem(storageKey, theme);
+        }
+
+        const saved = localStorage.getItem(storageKey);
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        setTheme(saved || (prefersDark ? "dark" : "light"));
+
+        themeToggle.addEventListener("click", () => {
+          const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+          setTheme(next);
+        });
+
+        copyBtn.addEventListener("click", async () => {
+          const text = cmdEl.textContent.trim();
+          try {
+            await navigator.clipboard.writeText(text);
+            copyStatus.textContent = "Copied install command.";
+            copyStatus.className = "status ok";
+            copyBtn.textContent = "Copied";
+            setTimeout(() => {
+              copyBtn.textContent = "Copy";
+            }, 1200);
+          } catch (_err) {
+            copyStatus.textContent = "Unable to copy automatically. Select and copy manually.";
+            copyStatus.className = "status err";
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
