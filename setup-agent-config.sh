@@ -218,7 +218,7 @@ sync_from_remote_source() {
     tmp_dir="$(mktemp -d)"
 
     cleanup_remote_tmp() {
-        rm -rf "$tmp_dir"
+        rm -rf "${tmp_dir:-}"
     }
     trap cleanup_remote_tmp EXIT
 
