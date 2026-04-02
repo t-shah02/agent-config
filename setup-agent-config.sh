@@ -429,7 +429,8 @@ agent_config_update() {
   if [ "\$auto_yes" = "--yes" ]; then
     echo "[agent-config] Auto-approving update due to --yes"
   else
-    read -r -p "[agent-config] Run update now? [y/N]: " confirm_update
+    printf "[agent-config] Run update now? [y/N]: "
+    read -r confirm_update
     case "\$confirm_update" in
       y|Y|yes|YES) ;;
       *) echo "[agent-config] Update skipped."; return 0 ;;
