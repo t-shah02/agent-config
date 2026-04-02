@@ -424,6 +424,10 @@ EOF
     print_success "Installed shell helper 'agent_config_update' in $profile_file"
 }
 
+agent_config_cli_share_dir() {
+    printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/agent-config"
+}
+
 extract_agent_config_cli_alias_name() {
     local profile="$1"
     awk -v start="$CLI_PROFILE_MARKER_START" -v end="$CLI_PROFILE_MARKER_END" '
@@ -445,7 +449,8 @@ extract_agent_config_cli_alias_name() {
 }
 
 install_agent_config_cli() {
-    local share="${XDG_DATA_HOME:-$HOME/.local/share}/agent-config"
+    local share
+    share="$(agent_config_cli_share_dir)"
     local bin_link="$HOME/.local/bin/agent-config"
     mkdir -p "$share" "$HOME/.local/bin"
     if [ "$SOURCE_MODE" = "local" ]; then
@@ -497,16 +502,24 @@ install_cli_shell_alias() {
             name="$reply"
         fi
     fi
-    local share_bin="$HOME/.local/share/agent-config/agent-config"
+    local share_bin share_bin_abs
+    share_bin="$(agent_config_cli_share_dir)/agent-config"
+    if [ -f "$share_bin" ]; then
+        share_bin_abs="$(readlink -f "$share_bin")"
+    else
+        share_bin_abs="$share_bin"
+    fi
     local helper_block
+    local esc_rhs
+    esc_rhs="${share_bin_abs//\'/\'\\\'\'}"
     case "$(basename "${SHELL:-bash}")" in
         fish)
             helper_block=$(printf '%s\nfunction %s\n    %s $argv\nend\n%s\n' \
-                "$CLI_PROFILE_MARKER_START" "$name" "$share_bin" "$CLI_PROFILE_MARKER_END")
+                "$CLI_PROFILE_MARKER_START" "$name" "$share_bin_abs" "$CLI_PROFILE_MARKER_END")
             ;;
         *)
-            helper_block=$(printf "%s\nalias %s='\$HOME/.local/share/agent-config/agent-config'\n%s\n" \
-                "$CLI_PROFILE_MARKER_START" "$name" "$CLI_PROFILE_MARKER_END")
+            helper_block=$(printf "%s\nalias %s='%s'\n%s\n" \
+                "$CLI_PROFILE_MARKER_START" "$name" "$esc_rhs" "$CLI_PROFILE_MARKER_END")
             ;;
     esac
     if awk -v start="$CLI_PROFILE_MARKER_START" '$0 == start {found=1} END{exit found?0:1}' "$profile"; then
@@ -522,60 +535,6 @@ install_cli_shell_alias() {
     print_blank >> "$profile"
     printf "%s\n" "$helper_block" >> "$profile"
     print_success "Installed agent-config CLI shell alias '$name' in $profile"
-}
-
-detect_package_manager() {
-    if command -v pacman >/dev/null 2>&1; then
-        echo "pacman"
-    elif command -v apt-get >/dev/null 2>&1; then
-        echo "apt"
-    elif command -v dnf >/dev/null 2>&1; then
-        echo "dnf"
-    elif command -v zypper >/dev/null 2>&1; then
-        echo "zypper"
-    elif command -v snap >/dev/null 2>&1; then
-        echo "snap"
-    else
-        echo "unknown"
-    fi
-}
-
-install_system_browser_deps() {
-    local pkg_manager
-    pkg_manager="$(detect_package_manager)"
-    local cmd=""
-
-    case "$pkg_manager" in
-        pacman)
-            cmd="sudo pacman -S --needed nss atk at-spi2-atk cups libdrm gtk3 libxcomposite libxdamage libxfixes libxrandr alsa-lib pango cairo libxkbcommon libx11 libxext libxrender libxcb freetype2 harfbuzz"
-            ;;
-        apt)
-            cmd="sudo apt-get update && sudo apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libgtk-3-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libasound2t64 libpangocairo-1.0-0 libxkbcommon0 libx11-6 libxext6 libxrender1 libxcb1 libfreetype6 libharfbuzz0b"
-            ;;
-        dnf)
-            cmd="sudo dnf install -y nss atk at-spi2-atk cups-libs libdrm gtk3 libXcomposite libXdamage libXfixes libXrandr alsa-lib pango cairo libxkbcommon libX11 libXext libXrender libxcb freetype harfbuzz"
-            ;;
-        zypper)
-            cmd="sudo zypper install -y mozilla-nss atk at-spi2-atk cups-libs libdrm2 gtk3 libXcomposite1 libXdamage1 libXfixes3 libXrandr2 alsa-lib pango cairo libxkbcommon0 libX11-6 libXext6 libXrender1 libxcb1 libfreetype6 harfbuzz"
-            ;;
-        snap)
-            cmd="sudo snap install chromium"
-            ;;
-        *)
-            print_info "Could not detect supported package manager for auto-install."
-            return 0
-            ;;
-    esac
-
-    print_info "Detected package manager: $pkg_manager"
-    print_info "Playwright may need system dependencies for browser runtime."
-    if prompt_yes_no "Run system dependency install command now?"; then
-        print_info "Running: $cmd"
-        eval "$cmd"
-        print_success "System dependency install command completed."
-    else
-        print_info "Skipped system dependency install command."
-    fi
 }
 
 # True if PLAYWRIGHT_BROWSERS_PATH already contains a chromium build (this setup's layout).
@@ -624,8 +583,6 @@ install_packages() {
     else
         print_success "Installed Python dependencies and Playwright chromium browser at $browsers_dir"
     fi
-    print_info "Arch Linux uses Playwright fallback browser builds (expected warning)."
-    install_system_browser_deps
 }
 
 
@@ -678,6 +635,14 @@ main() {
     # shellcheck source=/dev/null
     source "$AGENT_CONFIG_DIR/agent-config-utils.sh"
 
+    print_section
+
+    print_info "Installing agent-config CLI to $(agent_config_cli_share_dir) and $HOME/.local/bin"
+    install_agent_config_cli
+    install_cli_shell_alias
+
+    print_section
+
     prepare_auto_updates_preference
 
     print_section
@@ -703,10 +668,6 @@ main() {
     print_section
 
     install_shell_update_helper
-
-    install_agent_config_cli
-
-    install_cli_shell_alias
 
     if [ -f "$AGENT_CONFIG_DIR/.version.pending" ]; then
         mv -f "$AGENT_CONFIG_DIR/.version.pending" "$AGENT_CONFIG_DIR/.version"
