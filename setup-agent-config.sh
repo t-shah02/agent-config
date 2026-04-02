@@ -4,6 +4,7 @@ set -euo pipefail
 
 # Paths to agent config and cursor directories relative to the home of the user
 AGENT_CONFIG_DIR="$HOME/.agent-config"
+CONFIG_JSON="$AGENT_CONFIG_DIR/config.json"
 CURSOR_SKILLS_DIR="$HOME/.cursor/skills"
 CURSOR_AGENTS_DIR="$HOME/.cursor/agents"
 DEFAULT_BASE_URL="https://agent-config.neetbyte.fun/"
@@ -19,6 +20,10 @@ PROFILE_MARKER_END="# <<< agent-config helper <<<"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12.12}"
 NON_INTERACTIVE=0
 FRESH_INSTALL=0
+# Set by prepare_auto_updates_preference (0 = false, 1 = true)
+AUTO_UPDATES_BOOL=0
+# Prior install had .version but no config.json (migration); skip auto-update prompt
+NEED_CONFIG_LEGACY_UPGRADE=0
 
 # Colors for printing to the standard output
 COLOR_RESET="\033[0m"
@@ -121,6 +126,63 @@ require_cmd() {
         print_error "Required command not found: $1"
         exit 1
     fi
+}
+
+ensure_jq() {
+    if ! command -v jq >/dev/null 2>&1; then
+        print_error "jq is required to manage ~/.agent-config/config.json (e.g. pacman -S jq, apt install jq)."
+        exit 1
+    fi
+}
+
+prepare_auto_updates_preference() {
+    ensure_jq
+    if [ -f "$CONFIG_JSON" ]; then
+        if jq -e '.auto_updates_enabled == true' "$CONFIG_JSON" >/dev/null 2>&1; then
+            AUTO_UPDATES_BOOL=1
+        else
+            AUTO_UPDATES_BOOL=0
+        fi
+        return
+    fi
+    if [ "$NEED_CONFIG_LEGACY_UPGRADE" -eq 1 ]; then
+        AUTO_UPDATES_BOOL=0
+        print_info "Existing install without config.json: using auto_updates_enabled=false (default)."
+        return
+    fi
+    if [ "$NON_INTERACTIVE" -eq 1 ]; then
+        AUTO_UPDATES_BOOL=0
+        print_info "Non-interactive mode: auto_updates_enabled=false"
+        return
+    fi
+    if prompt_yes_no "Enable automatic agent-config update check on every shell startup?"; then
+        AUTO_UPDATES_BOOL=1
+    else
+        AUTO_UPDATES_BOOL=0
+    fi
+}
+
+write_agent_config_json() {
+    local browsers_dir="$1"
+    ensure_jq
+    browsers_dir="$(cd "$browsers_dir" && pwd)"
+    local tmp_file
+    tmp_file="$(mktemp)"
+    if [ -f "$CONFIG_JSON" ]; then
+        jq --arg path "$browsers_dir" \
+            '.playwright_browsers_path = $path | .auto_updates_enabled //= false' \
+            "$CONFIG_JSON" > "$tmp_file"
+    else
+        if [ "$AUTO_UPDATES_BOOL" -eq 1 ]; then
+            jq -n --arg path "$browsers_dir" \
+                '{auto_updates_enabled: true, playwright_browsers_path: $path}' > "$tmp_file"
+        else
+            jq -n --arg path "$browsers_dir" \
+                '{auto_updates_enabled: false, playwright_browsers_path: $path}' > "$tmp_file"
+        fi
+    fi
+    mv "$tmp_file" "$CONFIG_JSON"
+    print_success "Wrote $CONFIG_JSON"
 }
 
 sync_dir() {
@@ -233,75 +295,14 @@ sync_from_remote_source() {
         fi
     else
         require_cmd python3
-        python3 - "$BASE_URL" "$tmp_dir" <<'PY'
-import os
-import sys
-from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError
-
-base_url = sys.argv[1]
-out_dir = sys.argv[2]
-
-def fetch(url: str) -> bytes:
-    req = Request(url, headers={"User-Agent": "agent-config-installer"})
-    with urlopen(req) as resp:
-        return resp.read()
-
-class LinkParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.links = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag.lower() != "a":
-            return
-        href = dict(attrs).get("href")
-        if href:
-            self.links.append(href)
-
-def mirror_tree(root_path: str, optional: bool = False) -> None:
-    root_url = urljoin(base_url, root_path.rstrip("/") + "/")
-    seen = set()
-
-    def walk(url: str, rel_root: str) -> None:
-        if url in seen:
-            return
-        seen.add(url)
-        try:
-            page = fetch(url).decode("utf-8", errors="ignore")
-        except HTTPError as exc:
-            if optional and exc.code == 404:
-                return
-            raise
-
-        parser = LinkParser()
-        parser.feed(page)
-        for href in parser.links:
-            if href in ("../", "./") or href.startswith("?") or href.startswith("#"):
-                continue
-            child_url = urljoin(url, href)
-            parsed = urlparse(child_url)
-            if parsed.netloc != urlparse(base_url).netloc:
-                continue
-            child_rel = os.path.normpath(os.path.join(rel_root, href))
-            if href.endswith("/"):
-                walk(child_url, child_rel)
-            else:
-                if os.path.basename(child_rel).startswith("index.html"):
-                    continue
-                target_path = os.path.join(out_dir, child_rel)
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with open(target_path, "wb") as f:
-                    f.write(fetch(child_url))
-
-    walk(root_url, root_path.rstrip("/"))
-
-mirror_tree("config/skills")
-mirror_tree("packages")
-mirror_tree("config/agents", optional=True)
-PY
+        require_cmd curl
+        local mirror_py="$tmp_dir/remote_mirror_download.py"
+        if [ -f "$SCRIPT_DIR/scripts/remote_mirror_download.py" ]; then
+            cp "$SCRIPT_DIR/scripts/remote_mirror_download.py" "$mirror_py"
+        else
+            curl -fsSL "${BASE_URL}scripts/remote_mirror_download.py" -o "$mirror_py"
+        fi
+        python3 "$mirror_py" "$BASE_URL" "$tmp_dir"
     fi
 
     sync_dir "$tmp_dir/config/skills" "$AGENT_CONFIG_DIR/skills"
@@ -442,6 +443,14 @@ agent_config_update() {
     curl -fsSL "\${base_url}setup-agent-config.sh" | bash -s -- --source remote --base-url "\$base_url"
   fi
 }
+agent_config_maybe_auto_update() {
+  local cfg="\$HOME/.agent-config/config.json"
+  [ -f "\$cfg" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -e '.auto_updates_enabled == true' "\$cfg" >/dev/null 2>&1 || return 0
+  agent_config_update --yes
+}
+agent_config_maybe_auto_update
 $PROFILE_MARKER_END
 EOF
 )
@@ -567,7 +576,15 @@ main() {
 
     print_info "Source mode: $SOURCE_MODE"
     print_info "Base URL: $BASE_URL"
+
+    NEED_CONFIG_LEGACY_UPGRADE=0
+    if [ -d "$AGENT_CONFIG_DIR" ] && [ -f "$AGENT_CONFIG_DIR/.version" ] && [ ! -f "$CONFIG_JSON" ]; then
+        NEED_CONFIG_LEGACY_UPGRADE=1
+    fi
+
     sync_sources
+
+    prepare_auto_updates_preference
 
     print_section
 
@@ -576,6 +593,8 @@ main() {
     print_section
 
     install_packages
+
+    write_agent_config_json "$AGENT_CONFIG_DIR/browsers"
 
     print_section
 
