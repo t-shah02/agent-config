@@ -1,0 +1,39 @@
+#compdef agent-config
+# Zsh completion for agent-config (install to ~/.local/share/zsh/site-functions/).
+
+_agent_config_cmds() {
+    local -a cmds=(
+        'list-sections:List section names under ~/.agent-config'
+        'remove-section:Remove a section from ~/.agent-config and Cursor symlinks'
+        'reinstall-all:Recreate all skill and agent symlinks'
+        'remove-all:Remove all sections and matching symlinks'
+    )
+    _describe -t commands 'agent-config command' cmds
+}
+
+_agent_config_more() {
+    local c="" i
+    for i in "${words[@]}"; do
+        case $i in
+            list-sections | remove-section | reinstall-all | remove-all)
+                c=$i
+                break
+                ;;
+        esac
+    done
+    [[ $c == remove-section ]] || return 1
+    local -a sec=()
+    [[ -d ~/.agent-config/skills ]] && sec+=(${HOME}/.agent-config/skills/*(N:t))
+    [[ -d ~/.agent-config/agents ]] && sec+=(${HOME}/.agent-config/agents/*(N:t))
+    (( ${#sec[@]} )) || return 1
+    _describe -t sections 'section' ${(u)sec}
+}
+
+local curcontext="$curcontext" state line
+typeset -A opt_args
+
+_arguments -C -s \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '--yes[skip confirmations for destructive commands]' \
+    '1: :_agent_config_cmds' \
+    '*:: :_agent_config_more'

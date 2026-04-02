@@ -19,6 +19,8 @@ PROFILE_MARKER_START="# >>> agent-config helper >>>"
 PROFILE_MARKER_END="# <<< agent-config helper <<<"
 CLI_PROFILE_MARKER_START="# >>> agent-config cli >>>"
 CLI_PROFILE_MARKER_END="# <<< agent-config cli <<<"
+COMPLETION_PROFILE_MARKER_START="# >>> agent-config completion >>>"
+COMPLETION_PROFILE_MARKER_END="# <<< agent-config completion <<<"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12.12}"
 NON_INTERACTIVE=0
 FRESH_INSTALL=0
@@ -288,6 +290,12 @@ sync_from_local_source() {
     sync_dir "$local_root/packages" "$AGENT_CONFIG_DIR/packages"
     cp "$local_root/.version" "$AGENT_CONFIG_DIR/.version.pending"
     cp "$local_root/agent-config-utils.sh" "$AGENT_CONFIG_DIR/agent-config-utils.sh"
+    if [ -d "$local_root/completions" ]; then
+        mkdir -p "$AGENT_CONFIG_DIR/completions"
+        cp "$local_root/completions/agent-config.bash" "$AGENT_CONFIG_DIR/completions/agent-config.bash"
+        cp "$local_root/completions/_agent_config" "$AGENT_CONFIG_DIR/completions/_agent_config"
+        cp "$local_root/completions/agent-config.fish" "$AGENT_CONFIG_DIR/completions/agent-config.fish"
+    fi
     print_success "Synced local config, packages, and pending version into $AGENT_CONFIG_DIR"
 }
 
@@ -333,6 +341,10 @@ sync_from_remote_source() {
     curl -fsSL "${BASE_URL}agent-config-utils.sh" -o "$AGENT_CONFIG_DIR/agent-config-utils.sh"
     curl -fsSL "${BASE_URL}agent-config" -o "$AGENT_CONFIG_DIR/agent-config"
     chmod 755 "$AGENT_CONFIG_DIR/agent-config"
+    mkdir -p "$AGENT_CONFIG_DIR/completions"
+    curl -fsSL "${BASE_URL}completions/agent-config.bash" -o "$AGENT_CONFIG_DIR/completions/agent-config.bash"
+    curl -fsSL "${BASE_URL}completions/_agent_config" -o "$AGENT_CONFIG_DIR/completions/_agent_config"
+    curl -fsSL "${BASE_URL}completions/agent-config.fish" -o "$AGENT_CONFIG_DIR/completions/agent-config.fish"
     print_success "Synced remote config, packages, and pending version into $AGENT_CONFIG_DIR"
 }
 
@@ -537,6 +549,98 @@ install_cli_shell_alias() {
     print_success "Installed agent-config CLI shell alias '$name' in $profile"
 }
 
+install_agent_config_completion_profile_snippets() {
+    local profile
+    profile="$(get_shell_profile_path)"
+    mkdir -p "$(dirname "$profile")"
+    touch "$profile"
+
+    case "$(basename "${SHELL:-bash}")" in
+        fish)
+            return 0
+            ;;
+        zsh)
+            local zsh_block
+            zsh_block=$(cat <<'EOF'
+# >>> agent-config completion >>>
+fpath=("$HOME/.local/share/zsh/site-functions" $fpath)
+# <<< agent-config completion <<<
+EOF
+)
+            if awk -v start="$COMPLETION_PROFILE_MARKER_START" '$0 == start {found=1} END{exit found?0:1}' "$profile"; then
+                local tmp_file
+                tmp_file="$(mktemp)"
+                awk -v start="$COMPLETION_PROFILE_MARKER_START" -v end="$COMPLETION_PROFILE_MARKER_END" '
+                    $0 == start {in_block=1; next}
+                    $0 == end {in_block=0; next}
+                    in_block == 0 {print}
+                ' "$profile" > "$tmp_file"
+                mv "$tmp_file" "$profile"
+            fi
+            print_blank >> "$profile"
+            printf "%s\n" "$zsh_block" >> "$profile"
+            print_success "Added zsh fpath for agent-config completions in $profile (run compinit if needed)"
+            ;;
+        *)
+            local bash_block
+            bash_block=$(cat <<'EOF'
+# >>> agent-config completion >>>
+[ -f "$HOME/.local/share/agent-config/completions/agent-config.bash" ] && . "$HOME/.local/share/agent-config/completions/agent-config.bash"
+# <<< agent-config completion <<<
+EOF
+)
+            if awk -v start="$COMPLETION_PROFILE_MARKER_START" '$0 == start {found=1} END{exit found?0:1}' "$profile"; then
+                local tmp_file
+                tmp_file="$(mktemp)"
+                awk -v start="$COMPLETION_PROFILE_MARKER_START" -v end="$COMPLETION_PROFILE_MARKER_END" '
+                    $0 == start {in_block=1; next}
+                    $0 == end {in_block=0; next}
+                    in_block == 0 {print}
+                ' "$profile" > "$tmp_file"
+                mv "$tmp_file" "$profile"
+            fi
+            print_blank >> "$profile"
+            printf "%s\n" "$bash_block" >> "$profile"
+            print_success "Added bash completion hook for agent-config in $profile"
+            ;;
+    esac
+}
+
+install_agent_config_completions() {
+    local src=""
+    if [ "$SOURCE_MODE" = "local" ]; then
+        src="$SCRIPT_DIR/completions"
+    else
+        src="$AGENT_CONFIG_DIR/completions"
+    fi
+    if [ ! -f "$src/agent-config.bash" ] || [ ! -f "$src/_agent_config" ] || [ ! -f "$src/agent-config.fish" ]; then
+        print_info "agent-config shell completions not found under $src; skipping."
+        return 0
+    fi
+
+    local share
+    share="$(agent_config_cli_share_dir)"
+    mkdir -p "$share/completions"
+    cp "$src/agent-config.bash" "$share/completions/agent-config.bash"
+    cp "$src/_agent_config" "$share/completions/_agent_config"
+    cp "$src/agent-config.fish" "$share/completions/agent-config.fish"
+    chmod 644 "$share/completions/agent-config.bash" "$share/completions/_agent_config" "$share/completions/agent-config.fish"
+
+    local bcu="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+    mkdir -p "$bcu"
+    cp "$src/agent-config.bash" "$bcu/agent-config"
+
+    local zsh_sf="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+    mkdir -p "$zsh_sf"
+    cp "$src/_agent_config" "$zsh_sf/_agent_config"
+
+    mkdir -p "$HOME/.config/fish/completions"
+    cp "$src/agent-config.fish" "$HOME/.config/fish/completions/agent-config.fish"
+
+    print_success "Installed agent-config tab completions (bash, zsh, fish)"
+    install_agent_config_completion_profile_snippets
+}
+
 # True if PLAYWRIGHT_BROWSERS_PATH already contains a chromium build (this setup's layout).
 playwright_chromium_present_in() {
     local root="${1:?}"
@@ -640,6 +744,7 @@ main() {
     print_info "Installing agent-config CLI to $(agent_config_cli_share_dir) and $HOME/.local/bin"
     install_agent_config_cli
     install_cli_shell_alias
+    install_agent_config_completions
 
     print_section
 

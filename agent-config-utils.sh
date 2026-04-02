@@ -337,6 +337,10 @@ Global options:
   -h, --help                 Print this help and exit.
   --yes                      Non-interactive: skip confirmation for destructive commands.
 
+Tab completion (bash / zsh / fish) is installed by setup-agent-config.sh: bash and zsh get a
+marked block in your shell profile; fish loads ~/.config/fish/completions/agent-config.fish
+automatically. Custom CLI aliases are not completed unless you add another complete rule.
+
 Examples:
   agent-config list-sections
   agent-config remove-section personal
