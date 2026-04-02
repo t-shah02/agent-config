@@ -348,6 +348,60 @@ ensure_symlink() {
     print_success "Linked $target_path -> $source_path"
 }
 
+# Returns: 0 = run ensure_symlink (vacant path or user approved override)
+#          1 = skip this entry (user declined, non-interactive collision)
+#          2 = already correct symlink (nothing to do)
+# Args: kind_label (e.g. Skill or Agent), entry_name, target_link, source_path
+prompt_resolve_symlink_collision() {
+    local kind_label="$1"
+    local entry_name="$2"
+    local target_link="$3"
+    local source_path="$4"
+    local source_abs
+    source_abs="$(readlink -f "$source_path" 2>/dev/null || true)"
+    if [ -z "$source_abs" ] && [ -d "$source_path" ]; then
+        source_abs="$(cd "$source_path" && pwd -P)"
+    fi
+
+    if [ ! -L "$target_link" ] && [ ! -e "$target_link" ]; then
+        return 0
+    fi
+
+    if [ -L "$target_link" ]; then
+        local existing_abs
+        existing_abs="$(readlink -f "$target_link" 2>/dev/null || true)"
+        if [ -n "$existing_abs" ] && [ -n "$source_abs" ] && [ "$existing_abs" = "$source_abs" ]; then
+            return 2
+        fi
+    fi
+
+    local target_desc
+    if [ -L "$target_link" ]; then
+        target_desc="symbolic link -> $(readlink "$target_link")"
+    elif [ -d "$target_link" ]; then
+        target_desc="directory (not installed by this setup)"
+    else
+        target_desc="existing file"
+    fi
+
+    print_blank
+    print_info "${kind_label} name conflict for '${entry_name}': ${target_link} already exists."
+    print_info "  Current: ${target_desc}"
+    print_info "  This setup would link to: ${source_abs}"
+
+    if [ "$NON_INTERACTIVE" -eq 1 ]; then
+        print_info "Skipping (non-interactive / --yes). Re-run setup interactively to replace this path."
+        return 1
+    fi
+
+    if prompt_yes_no "Replace the existing entry with that symlink (backed up first)?"; then
+        return 0
+    fi
+
+    print_info "Skipped: ${entry_name} (left ${target_link} unchanged)."
+    return 1
+}
+
 symlink_skills() {
     local source_dir="$AGENT_CONFIG_DIR/skills"
     mkdir -p "$CURSOR_SKILLS_DIR"
@@ -359,10 +413,6 @@ symlink_skills() {
 
     for category in "$source_dir"/*; do
         [ -d "$category" ] || continue
-        local category_name
-        category_name="$(basename "$category")"
-        local target_category_dir="$CURSOR_SKILLS_DIR/$category_name"
-        mkdir -p "$target_category_dir"
 
         for skill in "$category"/*; do
             [ -d "$skill" ] || continue
@@ -373,7 +423,13 @@ symlink_skills() {
 
             local skill_name
             skill_name="$(basename "$skill")"
-            ensure_symlink "$skill" "$target_category_dir/$skill_name"
+            local target_link="$CURSOR_SKILLS_DIR/$skill_name"
+            prompt_resolve_symlink_collision "Skill" "$skill_name" "$target_link" "$skill"
+            case $? in
+                0) ensure_symlink "$skill" "$target_link" ;;
+                1) ;;
+                2) print_info "Already linked: $target_link" ;;
+            esac
         done
     done
 }
@@ -391,7 +447,13 @@ symlink_agents() {
         [ -e "$agent" ] || continue
         local name
         name="$(basename "$agent")"
-        ensure_symlink "$agent" "$CURSOR_AGENTS_DIR/$name"
+        local target_link="$CURSOR_AGENTS_DIR/$name"
+        prompt_resolve_symlink_collision "Agent" "$name" "$target_link" "$agent"
+        case $? in
+            0) ensure_symlink "$agent" "$target_link" ;;
+            1) ;;
+            2) print_info "Already linked: $target_link" ;;
+        esac
     done
 }
 
