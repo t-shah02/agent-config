@@ -1,0 +1,29 @@
+{
+    "domains": [
+        "easyweb.td.com",
+        "bitwarden.com"
+    ],
+    "paths": [
+        "/account",
+        "/profile",
+        "/settings",
+        "/login",
+        "/signup",
+        "/register",
+        "/logout",
+        "/checkout",
+        "/cart"
+    ],
+    "urlParameters": [
+        "token",
+        "code",
+        "redirect_uri",
+        "client_id",
+        "client_secret",
+        "grant_type",
+        "refresh_token",
+        "scope",
+        "response_type",
+        "state"
+    ]
+}
