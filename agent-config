@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+UTILS=""
+
+if [ -f "$SCRIPT_DIR/agent-config-utils.sh" ]; then
+    UTILS="$SCRIPT_DIR/agent-config-utils.sh"
+else
+    UTILS="${XDG_DATA_HOME:-$HOME/.local/share}/agent-config/agent-config-utils.sh"
+fi
+
+if [ ! -f "$UTILS" ]; then
+    printf "%s\n" "agent-config: could not find agent-config-utils.sh (expected next to this script or under ~/.local/share/agent-config/)." >&2
+    exit 1
+fi
+
+# shellcheck source=agent-config-utils.sh
+source "$UTILS"
+agent_config_cli_main "$@"

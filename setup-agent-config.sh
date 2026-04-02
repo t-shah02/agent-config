@@ -17,6 +17,8 @@ else
 fi
 PROFILE_MARKER_START="# >>> agent-config helper >>>"
 PROFILE_MARKER_END="# <<< agent-config helper <<<"
+CLI_PROFILE_MARKER_START="# >>> agent-config cli >>>"
+CLI_PROFILE_MARKER_END="# <<< agent-config cli <<<"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12.12}"
 NON_INTERACTIVE=0
 FRESH_INSTALL=0
@@ -24,6 +26,10 @@ FRESH_INSTALL=0
 AUTO_UPDATES_BOOL=0
 # Prior install had .version but no config.json (migration); skip auto-update prompt
 NEED_CONFIG_LEGACY_UPGRADE=0
+# Deferred .version commit (see agent_config_revert_version_on_exit)
+PREVIOUS_VERSION_SNAPSHOT=""
+REMOTE_SYNC_TMP_DIR=""
+SETUP_COMPLETED=0
 
 # Colors for printing to the standard output
 COLOR_RESET="\033[0m"
@@ -119,6 +125,20 @@ parse_args() {
 
 normalize_base_url() {
     BASE_URL="${BASE_URL%/}/"
+}
+
+agent_config_revert_version_on_exit() {
+    rm -rf "${REMOTE_SYNC_TMP_DIR:-}" 2>/dev/null || true
+    if [ "${SETUP_COMPLETED:-0}" = 1 ]; then
+        rm -f "${PREVIOUS_VERSION_SNAPSHOT:-}" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$AGENT_CONFIG_DIR/.version.pending" 2>/dev/null || true
+    if [ -n "${PREVIOUS_VERSION_SNAPSHOT:-}" ] && [ -f "$PREVIOUS_VERSION_SNAPSHOT" ] && [ -s "$PREVIOUS_VERSION_SNAPSHOT" ]; then
+        cp "$PREVIOUS_VERSION_SNAPSHOT" "$AGENT_CONFIG_DIR/.version"
+        print_info "Restored previous .version after setup did not complete successfully." >&2
+    fi
+    rm -f "${PREVIOUS_VERSION_SNAPSHOT:-}" 2>/dev/null || true
 }
 
 require_cmd() {
@@ -266,23 +286,19 @@ sync_from_local_source() {
         sync_dir "$local_root/config/agents" "$AGENT_CONFIG_DIR/agents"
     fi
     sync_dir "$local_root/packages" "$AGENT_CONFIG_DIR/packages"
-    cp "$local_root/.version" "$AGENT_CONFIG_DIR/.version"
-    print_success "Synced local config, packages, and version into $AGENT_CONFIG_DIR"
+    cp "$local_root/.version" "$AGENT_CONFIG_DIR/.version.pending"
+    cp "$local_root/agent-config-utils.sh" "$AGENT_CONFIG_DIR/agent-config-utils.sh"
+    print_success "Synced local config, packages, and pending version into $AGENT_CONFIG_DIR"
 }
 
 sync_from_remote_source() {
     require_cmd curl
     mkdir -p "$AGENT_CONFIG_DIR"
-    curl -fsSL "${BASE_URL}.version" -o "$AGENT_CONFIG_DIR/.version"
-    print_info "Downloaded version file from ${BASE_URL}.version"
+    curl -fsSL "${BASE_URL}.version" -o "$AGENT_CONFIG_DIR/.version.pending"
+    print_info "Downloaded pending version file from ${BASE_URL}.version"
 
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-
-    cleanup_remote_tmp() {
-        rm -rf "${tmp_dir:-}"
-    }
-    trap cleanup_remote_tmp EXIT
+    REMOTE_SYNC_TMP_DIR="$(mktemp -d)"
+    local tmp_dir="$REMOTE_SYNC_TMP_DIR"
 
     print_info "Downloading remote directories from ${BASE_URL}"
 
@@ -312,7 +328,12 @@ sync_from_remote_source() {
     fi
 
     sync_dir "$tmp_dir/packages" "$AGENT_CONFIG_DIR/packages"
-    print_success "Synced remote config, packages, and version into $AGENT_CONFIG_DIR"
+    rm -rf "$REMOTE_SYNC_TMP_DIR"
+    REMOTE_SYNC_TMP_DIR=""
+    curl -fsSL "${BASE_URL}agent-config-utils.sh" -o "$AGENT_CONFIG_DIR/agent-config-utils.sh"
+    curl -fsSL "${BASE_URL}agent-config" -o "$AGENT_CONFIG_DIR/agent-config"
+    chmod 755 "$AGENT_CONFIG_DIR/agent-config"
+    print_success "Synced remote config, packages, and pending version into $AGENT_CONFIG_DIR"
 }
 
 sync_sources() {
@@ -324,137 +345,6 @@ sync_sources() {
         print_error "Invalid --source value: $SOURCE_MODE (expected local|remote)"
         exit 1
     fi
-}
-
-ensure_symlink() {
-    local source_path="$1"
-    local target_path="$2"
-
-    if [ -L "$target_path" ]; then
-        local current_link
-        current_link="$(readlink "$target_path")"
-        if [ "$current_link" = "$source_path" ]; then
-            print_info "Already linked: $target_path"
-            return
-        fi
-        rm -f "$target_path"
-    elif [ -e "$target_path" ]; then
-        local backup_path="${target_path}.backup.$(date +%s)"
-        mv "$target_path" "$backup_path"
-        print_info "Backed up existing path to $backup_path"
-    fi
-
-    ln -s "$source_path" "$target_path"
-    print_success "Linked $target_path -> $source_path"
-}
-
-# Returns: 0 = run ensure_symlink (vacant path or user approved override)
-#          1 = skip this entry (user declined, non-interactive collision)
-#          2 = already correct symlink (nothing to do)
-# Args: kind_label (e.g. Skill or Agent), entry_name, target_link, source_path
-prompt_resolve_symlink_collision() {
-    local kind_label="$1"
-    local entry_name="$2"
-    local target_link="$3"
-    local source_path="$4"
-    local source_abs
-    source_abs="$(readlink -f "$source_path" 2>/dev/null || true)"
-    if [ -z "$source_abs" ] && [ -d "$source_path" ]; then
-        source_abs="$(cd "$source_path" && pwd -P)"
-    fi
-
-    if [ ! -L "$target_link" ] && [ ! -e "$target_link" ]; then
-        return 0
-    fi
-
-    if [ -L "$target_link" ]; then
-        local existing_abs
-        existing_abs="$(readlink -f "$target_link" 2>/dev/null || true)"
-        if [ -n "$existing_abs" ] && [ -n "$source_abs" ] && [ "$existing_abs" = "$source_abs" ]; then
-            return 2
-        fi
-    fi
-
-    local target_desc
-    if [ -L "$target_link" ]; then
-        target_desc="symbolic link -> $(readlink "$target_link")"
-    elif [ -d "$target_link" ]; then
-        target_desc="directory (not installed by this setup)"
-    else
-        target_desc="existing file"
-    fi
-
-    print_blank
-    print_info "${kind_label} name conflict for '${entry_name}': ${target_link} already exists."
-    print_info "  Current: ${target_desc}"
-    print_info "  This setup would link to: ${source_abs}"
-
-    if [ "$NON_INTERACTIVE" -eq 1 ]; then
-        print_info "Skipping (non-interactive / --yes). Re-run setup interactively to replace this path."
-        return 1
-    fi
-
-    if prompt_yes_no "Replace the existing entry with that symlink (backed up first)?"; then
-        return 0
-    fi
-
-    print_info "Skipped: ${entry_name} (left ${target_link} unchanged)."
-    return 1
-}
-
-symlink_skills() {
-    local source_dir="$AGENT_CONFIG_DIR/skills"
-    mkdir -p "$CURSOR_SKILLS_DIR"
-
-    if [ ! -d "$source_dir" ]; then
-        print_error "Skills source directory not found: $source_dir"
-        return
-    fi
-
-    for category in "$source_dir"/*; do
-        [ -d "$category" ] || continue
-
-        for skill in "$category"/*; do
-            [ -d "$skill" ] || continue
-            if [ ! -f "$skill/SKILL.md" ]; then
-                print_info "Skipping non-skill directory: $skill"
-                continue
-            fi
-
-            local skill_name
-            skill_name="$(basename "$skill")"
-            local target_link="$CURSOR_SKILLS_DIR/$skill_name"
-            prompt_resolve_symlink_collision "Skill" "$skill_name" "$target_link" "$skill"
-            case $? in
-                0) ensure_symlink "$skill" "$target_link" ;;
-                1) ;;
-                2) print_info "Already linked: $target_link" ;;
-            esac
-        done
-    done
-}
-
-symlink_agents() {
-    local source_dir="$AGENT_CONFIG_DIR/agents"
-    mkdir -p "$CURSOR_AGENTS_DIR"
-
-    if [ ! -d "$source_dir" ]; then
-        print_info "Agents source directory not found, skipping: $source_dir"
-        return
-    fi
-
-    for agent in "$source_dir"/*; do
-        [ -e "$agent" ] || continue
-        local name
-        name="$(basename "$agent")"
-        local target_link="$CURSOR_AGENTS_DIR/$name"
-        prompt_resolve_symlink_collision "Agent" "$name" "$target_link" "$agent"
-        case $? in
-            0) ensure_symlink "$agent" "$target_link" ;;
-            1) ;;
-            2) print_info "Already linked: $target_link" ;;
-        esac
-    done
 }
 
 install_shell_update_helper() {
@@ -534,6 +424,106 @@ EOF
     print_success "Installed shell helper 'agent_config_update' in $profile_file"
 }
 
+extract_agent_config_cli_alias_name() {
+    local profile="$1"
+    awk -v start="$CLI_PROFILE_MARKER_START" -v end="$CLI_PROFILE_MARKER_END" '
+        $0 == start { inb=1; next }
+        $0 == end { inb=0; next }
+        inb && /^alias / {
+            line=$0
+            sub(/^alias */, "", line)
+            sub(/=.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            print line
+            exit
+        }
+        inb && /^function / {
+            print $2
+            exit
+        }
+    ' "$profile"
+}
+
+install_agent_config_cli() {
+    local share="${XDG_DATA_HOME:-$HOME/.local/share}/agent-config"
+    local bin_link="$HOME/.local/bin/agent-config"
+    mkdir -p "$share" "$HOME/.local/bin"
+    if [ "$SOURCE_MODE" = "local" ]; then
+        if [ ! -f "$SCRIPT_DIR/agent-config" ] || [ ! -f "$SCRIPT_DIR/agent-config-utils.sh" ]; then
+            print_error "Missing agent-config or agent-config-utils.sh in $SCRIPT_DIR"
+            exit 1
+        fi
+        cp "$SCRIPT_DIR/agent-config" "$share/agent-config"
+        cp "$SCRIPT_DIR/agent-config-utils.sh" "$share/agent-config-utils.sh"
+    else
+        if [ ! -f "$AGENT_CONFIG_DIR/agent-config" ] || [ ! -f "$AGENT_CONFIG_DIR/agent-config-utils.sh" ]; then
+            print_error "Missing downloaded CLI files under $AGENT_CONFIG_DIR"
+            exit 1
+        fi
+        cp "$AGENT_CONFIG_DIR/agent-config" "$share/agent-config"
+        cp "$AGENT_CONFIG_DIR/agent-config-utils.sh" "$share/agent-config-utils.sh"
+    fi
+    chmod 755 "$share/agent-config"
+    chmod 644 "$share/agent-config-utils.sh"
+    if [ -e "$bin_link" ] && [ ! -L "$bin_link" ]; then
+        local backup_path="${bin_link}.backup.$(date +%s)"
+        mv "$bin_link" "$backup_path"
+        print_info "Backed up existing $bin_link to $backup_path"
+    fi
+    ln -sf "$share/agent-config" "$bin_link"
+    print_success "Installed agent-config CLI to $bin_link (-> $share/agent-config)"
+}
+
+install_cli_shell_alias() {
+    if [ "$NON_INTERACTIVE" -eq 1 ]; then
+        print_info "Skipping agent-config CLI shell alias (non-interactive / --yes)."
+        return 0
+    fi
+    local profile
+    profile="$(get_shell_profile_path)"
+    mkdir -p "$(dirname "$profile")"
+    touch "$profile"
+    local name="agent-config"
+    if awk -v start="$CLI_PROFILE_MARKER_START" '$0 == start {found=1} END{exit found?0:1}' "$profile"; then
+        local prev
+        prev="$(extract_agent_config_cli_alias_name "$profile")"
+        if [ -n "$prev" ]; then
+            name="$prev"
+        fi
+    else
+        local reply=""
+        read -r -p "Shell command name for agent-config CLI [agent-config]: " reply || true
+        if [ -n "$reply" ]; then
+            name="$reply"
+        fi
+    fi
+    local share_bin="$HOME/.local/share/agent-config/agent-config"
+    local helper_block
+    case "$(basename "${SHELL:-bash}")" in
+        fish)
+            helper_block=$(printf '%s\nfunction %s\n    %s $argv\nend\n%s\n' \
+                "$CLI_PROFILE_MARKER_START" "$name" "$share_bin" "$CLI_PROFILE_MARKER_END")
+            ;;
+        *)
+            helper_block=$(printf "%s\nalias %s='\$HOME/.local/share/agent-config/agent-config'\n%s\n" \
+                "$CLI_PROFILE_MARKER_START" "$name" "$CLI_PROFILE_MARKER_END")
+            ;;
+    esac
+    if awk -v start="$CLI_PROFILE_MARKER_START" '$0 == start {found=1} END{exit found?0:1}' "$profile"; then
+        local tmp_file
+        tmp_file="$(mktemp)"
+        awk -v start="$CLI_PROFILE_MARKER_START" -v end="$CLI_PROFILE_MARKER_END" '
+            $0 == start {in_block=1; next}
+            $0 == end {in_block=0; next}
+            in_block == 0 {print}
+        ' "$profile" > "$tmp_file"
+        mv "$tmp_file" "$profile"
+    fi
+    print_blank >> "$profile"
+    printf "%s\n" "$helper_block" >> "$profile"
+    print_success "Installed agent-config CLI shell alias '$name' in $profile"
+}
+
 detect_package_manager() {
     if command -v pacman >/dev/null 2>&1; then
         echo "pacman"
@@ -588,6 +578,20 @@ install_system_browser_deps() {
     fi
 }
 
+# True if PLAYWRIGHT_BROWSERS_PATH already contains a chromium build (this setup's layout).
+playwright_chromium_present_in() {
+    local root="${1:?}"
+    [ -d "$root" ] || return 1
+    local c
+    for c in "$root"/chromium-*; do
+        [ -d "$c" ] || continue
+        if [ -d "$c/chrome-linux" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 install_packages() {
     local packages_dir="$AGENT_CONFIG_DIR/packages"
     local browsers_dir="$AGENT_CONFIG_DIR/browsers"
@@ -599,15 +603,27 @@ install_packages() {
 
     mkdir -p "$browsers_dir"
 
+    local skip_playwright_install=0
+    if playwright_chromium_present_in "$browsers_dir"; then
+        print_info "Playwright chromium already present under $browsers_dir; skipping browser download."
+        skip_playwright_install=1
+    fi
+
     print_info "Installing packages in $packages_dir with uv"
     (
         cd "$packages_dir"
         # Avoid inheriting an unrelated virtualenv from the caller shell.
         unset VIRTUAL_ENV
         uv sync
-        PLAYWRIGHT_BROWSERS_PATH="$browsers_dir" uv run playwright install chromium
+        if [ "$skip_playwright_install" -eq 0 ]; then
+            PLAYWRIGHT_BROWSERS_PATH="$browsers_dir" uv run playwright install chromium
+        fi
     )
-    print_success "Installed Python dependencies and Playwright chromium browser at $browsers_dir"
+    if [ "$skip_playwright_install" -eq 1 ]; then
+        print_success "Synced Python dependencies; reused existing Playwright chromium at $browsers_dir"
+    else
+        print_success "Installed Python dependencies and Playwright chromium browser at $browsers_dir"
+    fi
     print_info "Arch Linux uses Playwright fallback browser builds (expected warning)."
     install_system_browser_deps
 }
@@ -645,7 +661,22 @@ main() {
         NEED_CONFIG_LEGACY_UPGRADE=1
     fi
 
+    PREVIOUS_VERSION_SNAPSHOT="$(mktemp)"
+    trap 'agent_config_revert_version_on_exit' EXIT
+    if [ -f "$AGENT_CONFIG_DIR/.version" ]; then
+        cp "$AGENT_CONFIG_DIR/.version" "$PREVIOUS_VERSION_SNAPSHOT"
+    else
+        : > "$PREVIOUS_VERSION_SNAPSHOT"
+    fi
+
     sync_sources
+
+    if [ ! -f "$AGENT_CONFIG_DIR/agent-config-utils.sh" ]; then
+        print_error "Missing $AGENT_CONFIG_DIR/agent-config-utils.sh (sync or download failed)."
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    source "$AGENT_CONFIG_DIR/agent-config-utils.sh"
 
     prepare_auto_updates_preference
 
@@ -672,6 +703,15 @@ main() {
     print_section
 
     install_shell_update_helper
+
+    install_agent_config_cli
+
+    install_cli_shell_alias
+
+    if [ -f "$AGENT_CONFIG_DIR/.version.pending" ]; then
+        mv -f "$AGENT_CONFIG_DIR/.version.pending" "$AGENT_CONFIG_DIR/.version"
+    fi
+    SETUP_COMPLETED=1
 }
 
 # run the script
